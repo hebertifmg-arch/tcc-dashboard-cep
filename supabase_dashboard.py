@@ -60,19 +60,51 @@ agora = datetime.now()
 hoje = agora.date()
 ontem = hoje - timedelta(days=1)
 
-# --- Data e hora de INÍCIO ---
+# --- Inicialização do session_state (apenas na primeira execução) ---
+if "data_ini" not in st.session_state:
+    st.session_state.data_ini = ontem
+    st.session_state.hora_ini = time(0, 0)
+    st.session_state.data_fim = hoje
+    st.session_state.hora_fim = time(23, 59)
+
+# --- Botões de atalho ANTES dos widgets (assim podemos alterar session_state) ---
+st.sidebar.caption("Atalhos rápidos:")
+col_a1, col_a2, col_a3 = st.sidebar.columns(3)
+
+def aplicar_atalho(novo_ini: datetime, novo_fim: datetime):
+    st.session_state.data_ini = novo_ini.date()
+    st.session_state.hora_ini = novo_ini.time().replace(second=0, microsecond=0)
+    st.session_state.data_fim = novo_fim.date()
+    st.session_state.hora_fim = novo_fim.time().replace(second=0, microsecond=0)
+
+if col_a1.button("Última 1h", use_container_width=True):
+    aplicar_atalho(agora - timedelta(hours=1), agora)
+    st.rerun()
+if col_a2.button("Hoje", use_container_width=True):
+    aplicar_atalho(
+        datetime.combine(hoje, time(0, 0)),
+        datetime.combine(hoje, time(23, 59))
+    )
+    st.rerun()
+if col_a3.button("7 dias", use_container_width=True):
+    aplicar_atalho(
+        datetime.combine(hoje - timedelta(days=7), time(0, 0)),
+        datetime.combine(hoje, time(23, 59))
+    )
+    st.rerun()
+
+# --- Widgets de data/hora (lendo do session_state) ---
 col_d_ini, col_h_ini = st.sidebar.columns([3, 2])
 with col_d_ini:
-    data_inicio = st.date_input("Data início", value=ontem, key="data_ini")
+    data_inicio = st.date_input("Data início", key="data_ini")
 with col_h_ini:
-    hora_inicio = st.time_input("Hora", value=time(0, 0), key="hora_ini", step=60)
+    hora_inicio = st.time_input("Hora", key="hora_ini", step=60)
 
-# --- Data e hora de FIM ---
 col_d_fim, col_h_fim = st.sidebar.columns([3, 2])
 with col_d_fim:
-    data_fim = st.date_input("Data fim", value=hoje, key="data_fim")
+    data_fim = st.date_input("Data fim", key="data_fim")
 with col_h_fim:
-    hora_fim = st.time_input("Hora", value=time(23, 59), key="hora_fim", step=60)
+    hora_fim = st.time_input("Hora", key="hora_fim", step=60)
 
 # Combina data + hora num datetime único
 dt_inicio = datetime.combine(data_inicio, hora_inicio)
@@ -81,29 +113,6 @@ dt_fim    = datetime.combine(data_fim, hora_fim)
 if dt_inicio >= dt_fim:
     st.sidebar.error("⚠️ Data/hora de início deve ser anterior à de fim")
     st.stop()
-
-# Botões de atalho rápido
-st.sidebar.caption("Atalhos:")
-col_a1, col_a2, col_a3 = st.sidebar.columns(3)
-if col_a1.button("Última 1h", use_container_width=True):
-    novo_ini = agora - timedelta(hours=1)
-    st.session_state.data_ini = novo_ini.date()
-    st.session_state.hora_ini = novo_ini.time().replace(second=0, microsecond=0)
-    st.session_state.data_fim = agora.date()
-    st.session_state.hora_fim = agora.time().replace(second=0, microsecond=0)
-    st.rerun()
-if col_a2.button("Hoje", use_container_width=True):
-    st.session_state.data_ini = hoje
-    st.session_state.hora_ini = time(0, 0)
-    st.session_state.data_fim = hoje
-    st.session_state.hora_fim = time(23, 59)
-    st.rerun()
-if col_a3.button("7 dias", use_container_width=True):
-    st.session_state.data_ini = hoje - timedelta(days=7)
-    st.session_state.hora_ini = time(0, 0)
-    st.session_state.data_fim = hoje
-    st.session_state.hora_fim = time(23, 59)
-    st.rerun()
 
 st.sidebar.subheader("📐 Limites de especificação (mm)")
 LIE = st.sidebar.number_input("LIE (Limite Inferior)", value=28.0, step=0.1, format="%.2f")
