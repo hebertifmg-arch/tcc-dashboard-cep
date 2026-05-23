@@ -3,8 +3,7 @@
  Dashboard CEP - Controle Estatístico de Processo
  TCC IFMG Sabará - Hebert Emmanuel Rocha Peluso
  ----------------------------------------------------------------------------
- Versão pronta para deploy no Streamlit Community Cloud.
- Credenciais lidas via st.secrets (NÃO hardcoded).
+ Versão com filtro de data + hora.
 ============================================================================
 """
 
@@ -14,7 +13,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from scipy.stats import norm
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 
 # =============================================================================
 # 1. CONFIGURAÇÃO
@@ -29,7 +28,7 @@ st.title("📏 Dashboard CEP - Paquímetro IoT")
 st.caption("TCC - Hebert Peluso | IFMG Sabará | Dados via Supabase (PostgreSQL)")
 
 # =============================================================================
-# 2. CONEXÃO SUPABASE - credenciais via st.secrets
+# 2. CONEXÃO SUPABASE
 # =============================================================================
 try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
@@ -51,16 +50,62 @@ def conectar_supabase():
 sb = conectar_supabase()
 
 # =============================================================================
-# 3. SIDEBAR
+# 3. SIDEBAR - FILTROS GERAIS
 # =============================================================================
 st.sidebar.header("⚙️ Configurações")
 
-st.sidebar.subheader("Filtros de período")
-hoje = datetime.now().date()
-data_inicio = st.sidebar.date_input("Data início", value=hoje - timedelta(days=1))
-data_fim    = st.sidebar.date_input("Data fim",    value=hoje)
+st.sidebar.subheader("📅 Filtros de período")
 
-st.sidebar.subheader("Limites de especificação (mm)")
+agora = datetime.now()
+hoje = agora.date()
+ontem = hoje - timedelta(days=1)
+
+# --- Data e hora de INÍCIO ---
+col_d_ini, col_h_ini = st.sidebar.columns([3, 2])
+with col_d_ini:
+    data_inicio = st.date_input("Data início", value=ontem, key="data_ini")
+with col_h_ini:
+    hora_inicio = st.time_input("Hora", value=time(0, 0), key="hora_ini", step=60)
+
+# --- Data e hora de FIM ---
+col_d_fim, col_h_fim = st.sidebar.columns([3, 2])
+with col_d_fim:
+    data_fim = st.date_input("Data fim", value=hoje, key="data_fim")
+with col_h_fim:
+    hora_fim = st.time_input("Hora", value=time(23, 59), key="hora_fim", step=60)
+
+# Combina data + hora num datetime único
+dt_inicio = datetime.combine(data_inicio, hora_inicio)
+dt_fim    = datetime.combine(data_fim, hora_fim)
+
+if dt_inicio >= dt_fim:
+    st.sidebar.error("⚠️ Data/hora de início deve ser anterior à de fim")
+    st.stop()
+
+# Botões de atalho rápido
+st.sidebar.caption("Atalhos:")
+col_a1, col_a2, col_a3 = st.sidebar.columns(3)
+if col_a1.button("Última 1h", use_container_width=True):
+    novo_ini = agora - timedelta(hours=1)
+    st.session_state.data_ini = novo_ini.date()
+    st.session_state.hora_ini = novo_ini.time().replace(second=0, microsecond=0)
+    st.session_state.data_fim = agora.date()
+    st.session_state.hora_fim = agora.time().replace(second=0, microsecond=0)
+    st.rerun()
+if col_a2.button("Hoje", use_container_width=True):
+    st.session_state.data_ini = hoje
+    st.session_state.hora_ini = time(0, 0)
+    st.session_state.data_fim = hoje
+    st.session_state.hora_fim = time(23, 59)
+    st.rerun()
+if col_a3.button("7 dias", use_container_width=True):
+    st.session_state.data_ini = hoje - timedelta(days=7)
+    st.session_state.hora_ini = time(0, 0)
+    st.session_state.data_fim = hoje
+    st.session_state.hora_fim = time(23, 59)
+    st.rerun()
+
+st.sidebar.subheader("📐 Limites de especificação (mm)")
 LIE = st.sidebar.number_input("LIE (Limite Inferior)", value=28.0, step=0.1, format="%.2f")
 LSE = st.sidebar.number_input("LSE (Limite Superior)", value=32.0, step=0.1, format="%.2f")
 
@@ -68,9 +113,9 @@ if LIE >= LSE:
     st.sidebar.error("⚠️ LIE deve ser menor que LSE")
     st.stop()
 
-st.sidebar.subheader("Atualização")
+st.sidebar.subheader("🔄 Atualização")
 auto_refresh = st.sidebar.checkbox("Auto-refresh (10s)", value=False)
-if st.sidebar.button("🔄 Atualizar agora"):
+if st.sidebar.button("🔄 Atualizar agora", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
@@ -78,9 +123,11 @@ if st.sidebar.button("🔄 Atualizar agora"):
 # 4. CARREGAMENTO
 # =============================================================================
 @st.cache_data(ttl=10)
-def carregar_dados(d_ini, d_fim):
-    inicio_iso = f"{d_ini}T00:00:00+00:00"
-    fim_iso    = f"{d_fim}T23:59:59+00:00"
+def carregar_dados(dt_ini: datetime, dt_fim: datetime):
+    # Converte datetime local (Brasília) para UTC para o filtro no servidor
+    # OBS: assumindo que os datetimes recebidos são "naive" mas representam horário local
+    inicio_iso = dt_ini.strftime("%Y-%m-%dT%H:%M:%S-03:00")
+    fim_iso    = dt_fim.strftime("%Y-%m-%dT%H:%M:%S-03:00")
 
     response = (
         sb.table("leituras")
@@ -99,12 +146,17 @@ def carregar_dados(d_ini, d_fim):
     df["timestamp"] = df["timestamp"].dt.tz_convert("America/Sao_Paulo")
     return df
 
-df = carregar_dados(data_inicio, data_fim)
+df = carregar_dados(dt_inicio, dt_fim)
+
+# Cabeçalho com info do período
+st.info(
+    f"📊 Período: **{dt_inicio.strftime('%d/%m/%Y %H:%M')}** até **{dt_fim.strftime('%d/%m/%Y %H:%M')}**"
+)
 
 if df.empty:
     st.warning(
         "Nenhuma medição encontrada no período selecionado. "
-        "Verifique se a ponte e o ESP32 estão rodando."
+        "Verifique se a ponte e o ESP32 estão rodando, ou amplie a janela temporal."
     )
     st.stop()
 
@@ -248,25 +300,111 @@ with col_info:
 st.divider()
 
 # =============================================================================
-# 10. TABELA DE NÃO CONFORMIDADES
+# 10. TABELA DE NÃO CONFORMIDADES - com filtro adicional
 # =============================================================================
 st.subheader("⚠️ Registro de Não Conformidades")
-if n_rejeitos > 0:
-    tabela = df[df["status"] == "REJEITADO"][
-        ["timestamp", "medida_mm", "valor_bruto", "tensao", "status"]
-    ].copy()
-    tabela["timestamp"] = tabela["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
-    tabela.columns = ["Data/Hora", "Medida (mm)", "ADC bruto", "Tensão (V)", "Status"]
-    st.dataframe(tabela, use_container_width=True, hide_index=True)
-    csv = tabela.to_csv(index=False).encode("utf-8")
-    st.download_button("📥 Baixar CSV", csv, "nao_conformidades.csv", "text/csv")
-else:
+
+rejeitos_df = df[df["status"] == "REJEITADO"].copy()
+
+if rejeitos_df.empty:
     st.success("✅ Nenhuma peça rejeitada no período selecionado.")
+else:
+    # --- Filtro adicional dentro do período principal ---
+    with st.expander("🔎 Filtrar não conformidades (refinamento)", expanded=False):
+        st.caption(
+            f"Total de rejeitos no período principal: **{len(rejeitos_df)}**. "
+            "Use os filtros abaixo para refinar a lista."
+        )
+
+        # Range dos dados de rejeito
+        rej_min = rejeitos_df["timestamp"].min().to_pydatetime()
+        rej_max = rejeitos_df["timestamp"].max().to_pydatetime()
+
+        col_rf1, col_rf2 = st.columns(2)
+        with col_rf1:
+            data_rej_ini = st.date_input(
+                "Data início (refinar)",
+                value=rej_min.date(),
+                key="rej_data_ini",
+                min_value=rej_min.date(),
+                max_value=rej_max.date(),
+            )
+            hora_rej_ini = st.time_input(
+                "Hora início (refinar)",
+                value=rej_min.time().replace(second=0, microsecond=0),
+                key="rej_hora_ini",
+                step=60,
+            )
+        with col_rf2:
+            data_rej_fim = st.date_input(
+                "Data fim (refinar)",
+                value=rej_max.date(),
+                key="rej_data_fim",
+                min_value=rej_min.date(),
+                max_value=rej_max.date(),
+            )
+            hora_rej_fim = st.time_input(
+                "Hora fim (refinar)",
+                value=rej_max.time().replace(second=0, microsecond=0),
+                key="rej_hora_fim",
+                step=60,
+            )
+
+        # Filtro por valor de medida (faixa de mm)
+        col_rf3, col_rf4 = st.columns(2)
+        with col_rf3:
+            medida_min_filter = st.number_input(
+                "Medida mínima (mm)",
+                value=float(rejeitos_df["medida_mm"].min()),
+                step=0.1, format="%.3f",
+                key="rej_medida_min"
+            )
+        with col_rf4:
+            medida_max_filter = st.number_input(
+                "Medida máxima (mm)",
+                value=float(rejeitos_df["medida_mm"].max()),
+                step=0.1, format="%.3f",
+                key="rej_medida_max"
+            )
+
+    # Aplica filtros
+    dt_rej_ini = pd.Timestamp(datetime.combine(data_rej_ini, hora_rej_ini), tz="America/Sao_Paulo")
+    dt_rej_fim = pd.Timestamp(datetime.combine(data_rej_fim, hora_rej_fim), tz="America/Sao_Paulo")
+
+    rejeitos_filtrados = rejeitos_df[
+        (rejeitos_df["timestamp"] >= dt_rej_ini) &
+        (rejeitos_df["timestamp"] <= dt_rej_fim) &
+        (rejeitos_df["medida_mm"] >= medida_min_filter) &
+        (rejeitos_df["medida_mm"] <= medida_max_filter)
+    ]
+
+    # Mostra contadores
+    col_c1, col_c2 = st.columns(2)
+    col_c1.metric("Rejeitos exibidos", f"{len(rejeitos_filtrados)} de {len(rejeitos_df)}")
+    if len(rejeitos_filtrados) > 0:
+        col_c2.metric("Medida média dos rejeitos", f"{rejeitos_filtrados['medida_mm'].mean():.3f} mm")
+
+    if rejeitos_filtrados.empty:
+        st.warning("Nenhum rejeito corresponde aos filtros aplicados.")
+    else:
+        tabela = rejeitos_filtrados[
+            ["timestamp", "medida_mm", "valor_bruto", "tensao", "status"]
+        ].copy()
+        tabela["timestamp"] = tabela["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
+        tabela.columns = ["Data/Hora", "Medida (mm)", "ADC bruto", "Tensão (V)", "Status"]
+        st.dataframe(tabela, use_container_width=True, hide_index=True)
+
+        csv = tabela.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "📥 Baixar CSV", csv,
+            f"nao_conformidades_{data_rej_ini}_{data_rej_fim}.csv",
+            "text/csv"
+        )
 
 # =============================================================================
 # 11. AUTO-REFRESH
 # =============================================================================
 if auto_refresh:
-    import time
-    time.sleep(10)
+    import time as _time
+    _time.sleep(10)
     st.rerun()
