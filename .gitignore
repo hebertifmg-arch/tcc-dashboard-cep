@@ -1,0 +1,22 @@
+# Credenciais - NUNCA commitar
+.streamlit/secrets.toml
+.env
+chave-tcc.json
+
+# Banco local
+*.db
+*.sqlite
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
