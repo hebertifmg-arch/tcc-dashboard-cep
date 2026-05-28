@@ -3,7 +3,7 @@
  Dashboard CEP - Controle Estatístico de Processo
  TCC IFMG Sabará - Hebert Emmanuel Rocha Peluso
  ----------------------------------------------------------------------------
- Versão com filtro de data + hora.
+ Versão com filtro de data + hora e limite ampliado de leitura (50000).
 ============================================================================
 """
 
@@ -93,7 +93,7 @@ if col_a3.button("7 dias", use_container_width=True):
     )
     st.rerun()
 
-# --- Widgets de data/hora (lendo do session_state) ---
+# --- Widgets de data/hora ---
 col_d_ini, col_h_ini = st.sidebar.columns([3, 2])
 with col_d_ini:
     data_inicio = st.date_input("Data início", key="data_ini")
@@ -106,7 +106,6 @@ with col_d_fim:
 with col_h_fim:
     hora_fim = st.time_input("Hora", key="hora_fim", step=60)
 
-# Combina data + hora num datetime único
 dt_inicio = datetime.combine(data_inicio, hora_inicio)
 dt_fim    = datetime.combine(data_fim, hora_fim)
 
@@ -133,8 +132,6 @@ if st.sidebar.button("🔄 Atualizar agora", use_container_width=True):
 # =============================================================================
 @st.cache_data(ttl=10)
 def carregar_dados(dt_ini: datetime, dt_fim: datetime):
-    # Converte datetime local (Brasília) para UTC para o filtro no servidor
-    # OBS: assumindo que os datetimes recebidos são "naive" mas representam horário local
     inicio_iso = dt_ini.strftime("%Y-%m-%dT%H:%M:%S-03:00")
     fim_iso    = dt_fim.strftime("%Y-%m-%dT%H:%M:%S-03:00")
 
@@ -144,6 +141,7 @@ def carregar_dados(dt_ini: datetime, dt_fim: datetime):
         .gte("timestamp", inicio_iso)
         .lte("timestamp", fim_iso)
         .order("timestamp", desc=False)
+        .limit(50000)   # << contorna o limite default do PostgREST (1000)
         .execute()
     )
 
@@ -168,6 +166,13 @@ if df.empty:
         "Verifique se a ponte e o ESP32 estão rodando, ou amplie a janela temporal."
     )
     st.stop()
+
+# Aviso se atingir o teto da consulta (provável necessidade de paginação)
+if len(df) >= 50000:
+    st.warning(
+        f"⚠️ A consulta atingiu o teto de **{len(df)} registros**. "
+        "Pode haver mais dados no período. Refine o filtro ou implemente paginação."
+    )
 
 # =============================================================================
 # 5. CLASSIFICAÇÃO
@@ -318,14 +323,12 @@ rejeitos_df = df[df["status"] == "REJEITADO"].copy()
 if rejeitos_df.empty:
     st.success("✅ Nenhuma peça rejeitada no período selecionado.")
 else:
-    # --- Filtro adicional dentro do período principal ---
     with st.expander("🔎 Filtrar não conformidades (refinamento)", expanded=False):
         st.caption(
             f"Total de rejeitos no período principal: **{len(rejeitos_df)}**. "
             "Use os filtros abaixo para refinar a lista."
         )
 
-        # Range dos dados de rejeito
         rej_min = rejeitos_df["timestamp"].min().to_pydatetime()
         rej_max = rejeitos_df["timestamp"].max().to_pydatetime()
 
@@ -359,7 +362,6 @@ else:
                 step=60,
             )
 
-        # Filtro por valor de medida (faixa de mm)
         col_rf3, col_rf4 = st.columns(2)
         with col_rf3:
             medida_min_filter = st.number_input(
@@ -376,7 +378,6 @@ else:
                 key="rej_medida_max"
             )
 
-    # Aplica filtros
     dt_rej_ini = pd.Timestamp(datetime.combine(data_rej_ini, hora_rej_ini), tz="America/Sao_Paulo")
     dt_rej_fim = pd.Timestamp(datetime.combine(data_rej_fim, hora_rej_fim), tz="America/Sao_Paulo")
 
@@ -387,7 +388,6 @@ else:
         (rejeitos_df["medida_mm"] <= medida_max_filter)
     ]
 
-    # Mostra contadores
     col_c1, col_c2 = st.columns(2)
     col_c1.metric("Rejeitos exibidos", f"{len(rejeitos_filtrados)} de {len(rejeitos_df)}")
     if len(rejeitos_filtrados) > 0:
