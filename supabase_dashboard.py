@@ -3,8 +3,8 @@
  Dashboard CEP - Controle Estatístico de Processo
  TCC IFMG Sabará - Hebert Emmanuel Rocha Peluso
  ----------------------------------------------------------------------------
- Versão com filtro de data + hora, limite ampliado de leitura (50000),
- regras de Western Electric e exportação completa em CSV.
+ Versão com filtro de data + hora, limite ampliado de leitura (50000)
+ e exportação completa em CSV.
 ============================================================================
 """
 
@@ -216,36 +216,6 @@ if n < 30:
     )
 
 # =============================================================================
-# 6b. REGRAS DE WESTERN ELECTRIC (detecção de processo fora de controle)
-# =============================================================================
-# Regra 1: 1 ponto além de 3σ da média
-# Regra 2: 2 de 3 pontos consecutivos além de 2σ, do mesmo lado
-# Regra 3: 4 de 5 pontos consecutivos além de 1σ, do mesmo lado
-# Regra 4: 8 pontos consecutivos do mesmo lado da média
-violacoes = {}
-df["we_violacao"] = False
-
-if desvio > 0 and n >= 2:
-    z = pd.Series((medidas - media) / desvio, index=df.index)
-
-    r1 = z.abs() > 3
-    r2 = ((z > 2).rolling(3).sum() >= 2) | ((z < -2).rolling(3).sum() >= 2)
-    r3 = ((z > 1).rolling(5).sum() >= 4) | ((z < -1).rolling(5).sum() >= 4)
-    r4 = ((z > 0).rolling(8).sum() == 8) | ((z < 0).rolling(8).sum() == 8)
-
-    violacoes = {
-        "Regra 1 — ponto além de 3σ":                int(r1.sum()),
-        "Regra 2 — 2 de 3 pontos além de 2σ":        int(r2.fillna(False).sum()),
-        "Regra 3 — 4 de 5 pontos além de 1σ":        int(r3.fillna(False).sum()),
-        "Regra 4 — 8 pontos do mesmo lado da média": int(r4.fillna(False).sum()),
-    }
-    df["we_violacao"] = (
-        r1.fillna(False) | r2.fillna(False) | r3.fillna(False) | r4.fillna(False)
-    )
-
-n_we = int(df["we_violacao"].sum())
-
-# =============================================================================
 # 7. KPIs
 # =============================================================================
 if np.isnan(cpk):
@@ -275,9 +245,8 @@ st.divider()
 st.subheader("📈 Gráfico de Controle (Shewhart)")
 
 fig_ctrl = go.Figure()
-df_ok  = df[(df["status"] == "OK") & (~df["we_violacao"])]
+df_ok  = df[df["status"] == "OK"]
 df_rej = df[df["status"] == "REJEITADO"]
-df_we  = df[df["we_violacao"] & (df["status"] == "OK")]
 
 # Scattergl: renderização acelerada, essencial com milhares de pontos
 fig_ctrl.add_trace(go.Scattergl(
@@ -295,13 +264,6 @@ fig_ctrl.add_trace(go.Scattergl(
     mode="markers", name="Rejeitadas",
     marker=dict(color="red", size=10, symbol="x"),
 ))
-if not df_we.empty:
-    fig_ctrl.add_trace(go.Scattergl(
-        x=df_we["timestamp"], y=df_we["medida_mm"],
-        mode="markers", name="Fora de controle (W.E.)",
-        marker=dict(color="orange", size=11, symbol="diamond-open",
-                    line=dict(width=2)),
-    ))
 
 fig_ctrl.add_hline(y=LSE, line=dict(color="blue", dash="dash"),
                    annotation_text=f"LSE = {LSE:.2f}", annotation_position="top right")
@@ -320,25 +282,6 @@ fig_ctrl.update_layout(
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
 )
 st.plotly_chart(fig_ctrl, use_container_width=True)
-
-# Resumo das regras de Western Electric
-if violacoes:
-    with st.expander(
-        f"🔶 Regras de Western Electric — {n_we} ponto(s) com padrão fora de controle",
-        expanded=(n_we > 0)
-    ):
-        st.caption(
-            "As regras detectam padrões estatísticos suspeitos **mesmo dentro da "
-            "especificação**: um processo pode produzir peças aprovadas e ainda "
-            "assim estar saindo de controle (tendência, deslocamento da média)."
-        )
-        cols_we = st.columns(4)
-        for col, (regra, qtd) in zip(cols_we, violacoes.items()):
-            col.metric(regra.split("—")[0].strip(), qtd,
-                       delta="⚠" if qtd > 0 else None,
-                       delta_color="inverse" if qtd > 0 else "off")
-
-st.divider()
 
 # =============================================================================
 # 9. HISTOGRAMA
@@ -378,9 +321,6 @@ with col_info:
             st.warning(f"**Capacidade marginal** (1,00 ≤ Cpk = {cpk:.2f} < 1,33)")
         else:
             st.error(f"**Processo incapaz** (Cpk = {cpk:.2f} < 1,00)")
-
-    if n_we > 0:
-        st.warning(f"🔶 **{n_we} ponto(s)** com padrão fora de controle (Western Electric)")
 
     st.markdown(f"""
     **Resumo estatístico**
