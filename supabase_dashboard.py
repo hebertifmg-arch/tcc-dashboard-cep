@@ -3,7 +3,8 @@
  Dashboard CEP - Controle Estatístico de Processo
  TCC IFMG Sabará - Hebert Emmanuel Rocha Peluso
  ----------------------------------------------------------------------------
- Versão com filtro de data + hora e limite ampliado de leitura (50000).
+ Versão com filtro de data + hora, limite ampliado de leitura (50000),
+ regras de Western Electric e exportação completa em CSV.
 ============================================================================
 """
 
@@ -14,6 +15,9 @@ import numpy as np
 import plotly.graph_objects as go
 from scipy.stats import norm
 from datetime import datetime, timedelta, time
+from zoneinfo import ZoneInfo
+
+TZ = ZoneInfo("America/Sao_Paulo")
 
 # =============================================================================
 # 1. CONFIGURAÇÃO
@@ -56,7 +60,7 @@ st.sidebar.header("⚙️ Configurações")
 
 st.sidebar.subheader("📅 Filtros de período")
 
-agora = datetime.now()
+agora = datetime.now(TZ).replace(tzinfo=None)
 hoje = agora.date()
 ontem = hoje - timedelta(days=1)
 
@@ -132,8 +136,10 @@ if st.sidebar.button("🔄 Atualizar agora", use_container_width=True):
 # =============================================================================
 @st.cache_data(ttl=10)
 def carregar_dados(dt_ini: datetime, dt_fim: datetime):
-    inicio_iso = dt_ini.strftime("%Y-%m-%dT%H:%M:%S-03:00")
-    fim_iso    = dt_fim.strftime("%Y-%m-%dT%H:%M:%S-03:00")
+    # Inclui os 59 segundos finais do minuto selecionado (ex.: 23:59:00 -> 23:59:59),
+    # senão medições no último minuto da janela ficariam de fora.
+    inicio_iso = dt_ini.replace(tzinfo=TZ).isoformat()
+    fim_iso    = (dt_fim + timedelta(seconds=59)).replace(tzinfo=TZ).isoformat()
 
     response = (
         sb.table("leituras")
@@ -203,17 +209,61 @@ LIC = media - 3 * desvio
 n_rejeitos = (df["status"] == "REJEITADO").sum()
 pct_rejeito = 100 * n_rejeitos / n if n > 0 else 0.0
 
+if n < 30:
+    st.warning(
+        f"⚠️ Apenas **{n}** amostra(s) no período. Índices Cp/Cpk calculados sobre "
+        "menos de 30 amostras têm baixa confiabilidade estatística."
+    )
+
+# =============================================================================
+# 6b. REGRAS DE WESTERN ELECTRIC (detecção de processo fora de controle)
+# =============================================================================
+# Regra 1: 1 ponto além de 3σ da média
+# Regra 2: 2 de 3 pontos consecutivos além de 2σ, do mesmo lado
+# Regra 3: 4 de 5 pontos consecutivos além de 1σ, do mesmo lado
+# Regra 4: 8 pontos consecutivos do mesmo lado da média
+violacoes = {}
+df["we_violacao"] = False
+
+if desvio > 0 and n >= 2:
+    z = pd.Series((medidas - media) / desvio, index=df.index)
+
+    r1 = z.abs() > 3
+    r2 = ((z > 2).rolling(3).sum() >= 2) | ((z < -2).rolling(3).sum() >= 2)
+    r3 = ((z > 1).rolling(5).sum() >= 4) | ((z < -1).rolling(5).sum() >= 4)
+    r4 = ((z > 0).rolling(8).sum() == 8) | ((z < 0).rolling(8).sum() == 8)
+
+    violacoes = {
+        "Regra 1 — ponto além de 3σ":                int(r1.sum()),
+        "Regra 2 — 2 de 3 pontos além de 2σ":        int(r2.fillna(False).sum()),
+        "Regra 3 — 4 de 5 pontos além de 1σ":        int(r3.fillna(False).sum()),
+        "Regra 4 — 8 pontos do mesmo lado da média": int(r4.fillna(False).sum()),
+    }
+    df["we_violacao"] = (
+        r1.fillna(False) | r2.fillna(False) | r3.fillna(False) | r4.fillna(False)
+    )
+
+n_we = int(df["we_violacao"].sum())
+
 # =============================================================================
 # 7. KPIs
 # =============================================================================
+if np.isnan(cpk):
+    cpk_delta, cpk_cor = None, "off"
+elif cpk >= 1.33:
+    cpk_delta, cpk_cor = "Capaz", "normal"
+elif cpk >= 1.0:
+    cpk_delta, cpk_cor = "Marginal", "inverse"
+else:
+    cpk_delta, cpk_cor = "Incapaz", "inverse"
+
 col1, col2, col3, col4, col5, col6 = st.columns(6)
 col1.metric("Total medições", f"{n}")
 col2.metric("Média (mm)", f"{media:.3f}")
 col3.metric("Desvio padrão", f"{desvio:.4f}")
 col4.metric("Cp",  f"{cp:.2f}"  if not np.isnan(cp)  else "—")
 col5.metric("Cpk", f"{cpk:.2f}" if not np.isnan(cpk) else "—",
-            delta="Capaz" if cpk >= 1.33 else ("Marginal" if cpk >= 1.0 else "Incapaz"),
-            delta_color="normal" if cpk >= 1.33 else "inverse")
+            delta=cpk_delta, delta_color=cpk_cor)
 col6.metric("Rejeitos", f"{n_rejeitos} ({pct_rejeito:.1f}%)",
             delta_color="inverse")
 
@@ -225,24 +275,33 @@ st.divider()
 st.subheader("📈 Gráfico de Controle (Shewhart)")
 
 fig_ctrl = go.Figure()
-df_ok  = df[df["status"] == "OK"]
+df_ok  = df[(df["status"] == "OK") & (~df["we_violacao"])]
 df_rej = df[df["status"] == "REJEITADO"]
+df_we  = df[df["we_violacao"] & (df["status"] == "OK")]
 
-fig_ctrl.add_trace(go.Scatter(
+# Scattergl: renderização acelerada, essencial com milhares de pontos
+fig_ctrl.add_trace(go.Scattergl(
     x=df["timestamp"], y=df["medida_mm"],
     mode="lines", name="Tendência",
     line=dict(color="lightgray", width=1), showlegend=False,
 ))
-fig_ctrl.add_trace(go.Scatter(
+fig_ctrl.add_trace(go.Scattergl(
     x=df_ok["timestamp"], y=df_ok["medida_mm"],
     mode="markers", name="Aprovadas",
     marker=dict(color="green", size=7),
 ))
-fig_ctrl.add_trace(go.Scatter(
+fig_ctrl.add_trace(go.Scattergl(
     x=df_rej["timestamp"], y=df_rej["medida_mm"],
     mode="markers", name="Rejeitadas",
     marker=dict(color="red", size=10, symbol="x"),
 ))
+if not df_we.empty:
+    fig_ctrl.add_trace(go.Scattergl(
+        x=df_we["timestamp"], y=df_we["medida_mm"],
+        mode="markers", name="Fora de controle (W.E.)",
+        marker=dict(color="orange", size=11, symbol="diamond-open",
+                    line=dict(width=2)),
+    ))
 
 fig_ctrl.add_hline(y=LSE, line=dict(color="blue", dash="dash"),
                    annotation_text=f"LSE = {LSE:.2f}", annotation_position="top right")
@@ -257,10 +316,29 @@ fig_ctrl.add_hline(y=LIC, line=dict(color="orange", dash="dot"),
 
 fig_ctrl.update_layout(
     xaxis_title="Tempo", yaxis_title="Medida (mm)", height=450,
-    hovermode="x unified",
+    hovermode="closest",
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
 )
 st.plotly_chart(fig_ctrl, use_container_width=True)
+
+# Resumo das regras de Western Electric
+if violacoes:
+    with st.expander(
+        f"🔶 Regras de Western Electric — {n_we} ponto(s) com padrão fora de controle",
+        expanded=(n_we > 0)
+    ):
+        st.caption(
+            "As regras detectam padrões estatísticos suspeitos **mesmo dentro da "
+            "especificação**: um processo pode produzir peças aprovadas e ainda "
+            "assim estar saindo de controle (tendência, deslocamento da média)."
+        )
+        cols_we = st.columns(4)
+        for col, (regra, qtd) in zip(cols_we, violacoes.items()):
+            col.metric(regra.split("—")[0].strip(), qtd,
+                       delta="⚠" if qtd > 0 else None,
+                       delta_color="inverse" if qtd > 0 else "off")
+
+st.divider()
 
 # =============================================================================
 # 9. HISTOGRAMA
@@ -301,6 +379,9 @@ with col_info:
         else:
             st.error(f"**Processo incapaz** (Cpk = {cpk:.2f} < 1,00)")
 
+    if n_we > 0:
+        st.warning(f"🔶 **{n_we} ponto(s)** com padrão fora de controle (Western Electric)")
+
     st.markdown(f"""
     **Resumo estatístico**
     - Amostras: **{n}**
@@ -310,6 +391,17 @@ with col_info:
     - LIC (−3σ): **{LIC:.3f} mm**
     - Amplitude: **{medidas.max() - medidas.min():.3f} mm**
     """)
+
+    # Exportação de todas as medições do período
+    csv_all = df[["timestamp", "medida_mm", "valor_bruto", "tensao", "status"]].copy()
+    csv_all["timestamp"] = csv_all["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    st.download_button(
+        "📥 Baixar todas as medições (CSV)",
+        csv_all.to_csv(index=False).encode("utf-8"),
+        f"medicoes_{data_inicio}_{data_fim}.csv",
+        "text/csv",
+        use_container_width=True,
+    )
 
 st.divider()
 
@@ -379,7 +471,10 @@ else:
             )
 
     dt_rej_ini = pd.Timestamp(datetime.combine(data_rej_ini, hora_rej_ini), tz="America/Sao_Paulo")
-    dt_rej_fim = pd.Timestamp(datetime.combine(data_rej_fim, hora_rej_fim), tz="America/Sao_Paulo")
+    dt_rej_fim = pd.Timestamp(
+        datetime.combine(data_rej_fim, hora_rej_fim) + timedelta(seconds=59),
+        tz="America/Sao_Paulo"
+    )
 
     rejeitos_filtrados = rejeitos_df[
         (rejeitos_df["timestamp"] >= dt_rej_ini) &
