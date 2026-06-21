@@ -23,12 +23,12 @@ TZ = ZoneInfo("America/Sao_Paulo")
 # 1. CONFIGURAÇÃO
 # =============================================================================
 st.set_page_config(
-    page_title="Dashboard CEP - Paquímetro IoT",
-    page_icon="📏",
+    page_title="CEP - Paquímetro IoT",
+    
     layout="wide",
 )
 
-st.title("📏 Dashboard CEP - Paquímetro IoT")
+st.title("Dashboard GERENCIAL CEP - IoT")
 st.caption("TCC - Hebert Peluso | IFMG Sabará | Dados via Supabase (PostgreSQL)")
 
 # =============================================================================
