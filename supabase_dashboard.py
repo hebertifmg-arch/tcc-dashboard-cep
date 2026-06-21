@@ -3,8 +3,8 @@
  Dashboard CEP - Controle Estatístico de Processo
  TCC IFMG Sabará - Hebert Emmanuel Rocha Peluso
  ----------------------------------------------------------------------------
- Versão com filtro de data + hora, limite ampliado de leitura (50000)
- e exportação completa em CSV.
+ Versão com filtro de data + hora, FILTRO POR MÁQUINA (machine_id),
+ limite ampliado de leitura (50000) e exportação completa em CSV.
 ============================================================================
 """
 
@@ -141,9 +141,10 @@ def carregar_dados(dt_ini: datetime, dt_fim: datetime):
     inicio_iso = dt_ini.replace(tzinfo=TZ).isoformat()
     fim_iso    = (dt_fim + timedelta(seconds=59)).replace(tzinfo=TZ).isoformat()
 
+    # select("*"): robusto a colunas novas/ausentes (não quebra antes da migração)
     response = (
         sb.table("leituras")
-        .select("valor_bruto, tensao, medida_mm, uptime_s, timestamp")
+        .select("*")
         .gte("timestamp", inicio_iso)
         .lte("timestamp", fim_iso)
         .order("timestamp", desc=False)
@@ -157,6 +158,11 @@ def carregar_dados(dt_ini: datetime, dt_fim: datetime):
     df = pd.DataFrame(response.data)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df["timestamp"] = df["timestamp"].dt.tz_convert("America/Sao_Paulo")
+
+    # Compatibilidade: linhas antigas (firmware de teste) não têm machine_id
+    if "machine_id" not in df.columns:
+        df["machine_id"] = None
+    df["maquina"] = df["machine_id"].fillna("(sem identificação)")
     return df
 
 df = carregar_dados(dt_inicio, dt_fim)
@@ -179,6 +185,21 @@ if len(df) >= 50000:
         f"⚠️ A consulta atingiu o teto de **{len(df)} registros**. "
         "Pode haver mais dados no período. Refine o filtro ou implemente paginação."
     )
+
+# --- FILTRO POR MÁQUINA (machine_id) ---
+# Permite analisar a capacidade de um posto específico ou de todos juntos.
+st.sidebar.subheader("🏭 Máquina / posto")
+maquinas_disp = sorted(df["maquina"].unique().tolist())
+maquinas_sel = st.sidebar.multiselect(
+    "Selecione a(s) máquina(s)",
+    options=maquinas_disp,
+    default=maquinas_disp,
+)
+df = df[df["maquina"].isin(maquinas_sel)]
+
+if df.empty:
+    st.warning("Nenhuma medição para a(s) máquina(s) selecionada(s).")
+    st.stop()
 
 # =============================================================================
 # 5. CLASSIFICAÇÃO
@@ -332,8 +353,8 @@ with col_info:
     - Amplitude: **{medidas.max() - medidas.min():.3f} mm**
     """)
 
-    # Exportação de todas as medições do período
-    csv_all = df[["timestamp", "medida_mm", "valor_bruto", "tensao", "status"]].copy()
+    # Exportação de todas as medições do período (inclui a máquina de origem)
+    csv_all = df[["timestamp", "maquina", "medida_mm", "valor_bruto", "tensao", "status"]].copy()
     csv_all["timestamp"] = csv_all["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
     st.download_button(
         "📥 Baixar todas as medições (CSV)",
@@ -432,10 +453,10 @@ else:
         st.warning("Nenhum rejeito corresponde aos filtros aplicados.")
     else:
         tabela = rejeitos_filtrados[
-            ["timestamp", "medida_mm", "valor_bruto", "tensao", "status"]
+            ["timestamp", "maquina", "medida_mm", "valor_bruto", "tensao", "status"]
         ].copy()
         tabela["timestamp"] = tabela["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
-        tabela.columns = ["Data/Hora", "Medida (mm)", "ADC bruto", "Tensão (V)", "Status"]
+        tabela.columns = ["Data/Hora", "Máquina", "Medida (mm)", "ADC bruto", "Tensão (V)", "Status"]
         st.dataframe(tabela, use_container_width=True, hide_index=True)
 
         csv = tabela.to_csv(index=False).encode("utf-8")
